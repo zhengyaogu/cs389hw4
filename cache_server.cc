@@ -1,17 +1,26 @@
 #include "cache.hh"
 #include "lru_evictor.hh"
-#include <iostream>
-#include <string>
-#include <vector>
 #include <unistd.h>
-#include <optional>
+#include <boost/beast/core.hpp>
+#include <boost/beast/http.hpp>
+#include <boost/beast/version.hpp>
 #include <boost/asio.hpp>
+#include <chrono>
+#include <cstdlib>
+#include <ctime>
+#include <iostream>
+#include <memory>
+#include <string>
 #include <nlohmann/json.hpp>
 
-// for convenience
+namespace beast = boost::beast;         // from <boost/beast.hpp>
+namespace http = beast::http;           // from <boost/beast/http.hpp>
+namespace net = boost::asio;            // from <boost/asio.hpp>
+using tcp = boost::asio::ip::tcp;       // from <boost/asio/ip/tcp.hpp>
 using json = nlohmann::json;
-
 using size_type = uint64_t;
+using port_type = unsigned short;
+
 
 bool is_number(std::string& s)
 {
@@ -38,7 +47,7 @@ size_type to_number(std::string& s)
     return size_type(std::stoi(s));
 }
 
-bool set_params(size_type& maxmem, std::string& server, size_type& port, size_type& threads, int argc, char** argv)
+bool set_params(size_type& maxmem, std::string& server, port_type& port, size_type& threads, int argc, char** argv)
 {
     char opt;
     while ((opt = getopt(argc, argv, "m:p:s:t:")) != -1)
@@ -108,160 +117,243 @@ bool set_params(size_type& maxmem, std::string& server, size_type& port, size_ty
     return true;
 }
 
-class session : public std::enable_shared_from_this<session>
+
+class http_connection : public std::enable_shared_from_this<http_connection>
 {
 public:
-
-    session(boost::asio::ip::tcp::socket&& socket, Cache* cache)
-    : socket(std::move(socket)), cache_(cache)
+    http_connection(tcp::socket socket, Cache* cache)
+        : socket_(std::move(socket))
     {
+        cache_ = cache;
     }
 
-    void start()
+    // Initiate the asynchronous operations associated with the connection.
+    void
+    start()
     {
-        boost::asio::async_read_until(socket, streambuf, "\n", [self = shared_from_this()] (boost::system::error_code error, std::size_t bytes_transferred)
-        {
-            std::string req( (std::istreambuf_iterator<char>(&self->streambuf)), std::istreambuf_iterator<char>() );
-            json req_j = json::parse(req);
-            
-            bool is_valid_req = true;
-            parse_request(req, is_valid_req);
-
-            if (is_valid_req)
-            {
-                
-            }
-            boost::asio::async_write(self->socket, boost::asio::buffer("message received\n"), [self = self->shared_from_this()] (boost::system::error_code error, std::size_t bytes_transferred)
-            {
-                std::cout << "handled" << std::endl;
-            });
-        });
+        read_request();
     }
 
 private:
+    // The socket for the currently connected client.
+    tcp::socket socket_;
 
-    boost::asio::ip::tcp::socket socket;
-    boost::asio::streambuf streambuf;
-    Cache* cache_;
+    // The buffer for performing reads.
+    beast::flat_buffer buffer_;
 
-    std::string parse_request(std::string req, bool& is_valid)
+    // The request message.
+    http::request<http::dynamic_body> request_;
+
+    // The response message.
+    http::response<http::dynamic_body> response_;
+
+    Cache* cache_ = nullptr;
+
+    void set_header(unsigned int code)
     {
-        std::string response("");
-        std::vector<std::string> tokens;
-        size_t delim_pos; = req.find("/");
-        if (delim_pos != std::string::npos) {tokens.push_back(req)}
-        else
-        {
-            while(delim_pos != std::string::npos)
-            {
-                tokens.push_back( (req.substr(0, delim_pos)) );
-                req = req.substr(delim_pos);
-            }
-        }
+        response_.version(11);
+        response_.set(http::field::accept, "text/json");
+        response_.set(http::field::content_type, "application/json");
+        response_.set("Space-Used", cache_->space_used());
+        response_.result(code);
+    }
 
-        if (tokens.size() < 1 || tokens.size() > 3)
-        {
-            is_valid = false;
-            return "";
-        }
+    // Asynchronously receive a complete request message.
+    void
+    read_request()
+    {
+        auto self = shared_from_this();
 
-        if (tokens[0] == "HEAD")
-        {
-            response += "Space-Used: ";
-            response += std::to_string(cache_->space_used());
-            response += "\nHTTP Version: 1.1\n";
-            response += "Accept: text/html\n";
-            response += "Content Type: application/json\n";
-        }
-        else if(tokens[0] == "GET")
-        {
-            if (tokens.size() != 2) {is_valid = false; return "";}
-            else
+        http::async_read(
+            socket_,
+            buffer_,
+            request_,
+            [self](beast::error_code ec,
+                std::size_t bytes_transferred)
             {
-                json tuple;
-                auto val = cache_->get(tokens[1]);
-                if (val == nullptr) {return "error: 501";}
-                tuple["key"] = tokens[1];
-                tuple["value"] = cache_->get(tokens[1]);
-                is_valid = false;
-                return tuple.dump();
-            }
-        }
-        else if(tokens[0] == "PUT")
-        {
-            if (tokens.size() != 3) {is_valid = false; return "";}
-            else
-            {
-                cache_->set(tokens[1], tokens[2]);
-                is_valid = true;
-                return "";
-            }
-        }
-        else if(tokens[0] == "DELETE")
-        {
-            if (tokens.size() != 2) {is_valid = false; return "";}
-            else
-            {
-                cache_->del(tokens[1]);
-                is_valid = true;
-                return "";
-            }
-        }
+                boost::ignore_unused(bytes_transferred);
+                if(!ec)
+                    self->process_request();
+            });
+    }
 
-        else if (tokens[0] == "POST")
+    // Determine what needs to be done with the request message.
+    void
+    process_request()
+    {
+        switch(request_.method())
         {
-            if (tokens.size() != 2) {is_valid = false; return "";}
-            else
+        case http::verb::get:
             {
-                if (tokens[1] != "reset") {is_valid = false; return "";}
-                else
+                auto key = static_cast<std::string>(request_.target());
+                try
                 {
-                    cache_->reset();
-                    is_valid = true;
-                    return "";
+                    if (key.at(0) != '/') 
+                    {
+                        response_.result(400);
+                        beast::ostream(response_.body()) << "BAD REQUEST";
+                        break;
+                    }
+                }
+                catch(int e)
+                {
+                    response_.result(400);
+                    beast::ostream(response_.body()) << "BAD REQUEST";
+                    break;
+                }
+                key = key.substr(1);
+                
+                Cache::size_type size = 0;
+                auto val = cache_->get(key, size);
+                if (val == nullptr) 
+                {
+                    response_.result(404);
+                    beast::ostream(response_.body()) << "NOT FOUND";
+                    break;
+                }
+                set_header(200);
+                create_response_get(key, val);
+                break;
+            }
+        
+        case http::verb::put:
+            {auto key_value = static_cast<std::string>(request_.target());
+            try
+            {
+                if (key_value.at(0) != '/') 
+                {
+                    set_header(400);
+                    beast::ostream(response_.body()) << "BAD REQUEST";
+                    break;
                 }
             }
+            catch(int e)
+            {
+                set_header(400);
+                beast::ostream(response_.body()) << "BAD REQUEST";
+                break;
+            }
+            key_value = key_value.substr(1);
+
+            auto delim_pos = key_value.find('/');
+            if (delim_pos == std::string::npos) 
+            {
+                set_header(400);
+                beast::ostream(response_.body()) << "BAD REQUEST";
+                break;
+            }
+            auto key = key_value.substr(0, delim_pos);
+            auto value = key_value.substr(delim_pos + 1);
+            Cache::val_type val_ptr = value.c_str();
+
+            cache_->set(key, val_ptr, value.size() + 1);
+
+            set_header(200);
+
+            break;}
+        
+        case http::verb::delete_:
+            {auto key = static_cast<std::string>(request_.target());
+            try
+            {
+                if (key.at(0) != '/') 
+                {
+                    set_header(400);
+                    beast::ostream(response_.body()) << "BAD REQUEST";
+                    break;
+                }
+            }
+            catch(int e)
+            {
+                set_header(400);
+                beast::ostream(response_.body()) << "BAD REQUEST";
+                break;
+            }
+            key = key.substr(1);
+            cache_->del(key);
+            set_header(200);
+            break;}
+
+        case http::verb::head:
+            {
+                set_header(200);
+                break;
+            }
+
+        case http::verb::post:
+            {auto target = static_cast<std::string>(request_.target());
+            if (target.compare("/reset") != 1)
+            {
+                response_.result(400);
+                beast::ostream(response_.body()) << "BAD REQUEST";
+                break;
+            }
+            cache_->reset();
+            set_header(200);
+            break;}
+
+        default:
+            // We return responses indicating an error if
+            // we do not recognize the request method.
+            {
+                response_.result(400);
+                response_.set(http::field::content_type, "text/plain");
+                beast::ostream(response_.body())
+                                << std::string("Invalid request-method '") 
+                                << std::string(request_.method_string()) 
+                                << std::string("'");
+                break;
+            }
         }
+
+        write_response();
     }
 
+    void create_response_get(std::string key, Cache::val_type val)
+    {
+        json tuple;
+        tuple["key"] = key;
+        tuple["value"] = std::string(val);
+        beast::ostream(response_.body())
+            << (tuple.dump());
+    }
+
+    // Asynchronously transmit the response message.
+    void
+    write_response()
+    {
+        auto self = shared_from_this();
+
+        http::async_write(
+            socket_,
+            response_,
+            [self](beast::error_code ec, std::size_t)
+            {
+                self->socket_.shutdown(tcp::socket::shutdown_send, ec);
+            });
+    }
 
 };
 
-class server
+// "Loop" forever accepting new connections.
+void
+http_server(tcp::acceptor& acceptor, tcp::socket& socket, Cache* cache)
 {
-public:
+  acceptor.async_accept(socket,
+      [&acceptor, &socket, cache](beast::error_code ec)
+      {
+          if(!ec)
+              std::make_shared<http_connection>(std::move(socket), cache)->start();
+          http_server(acceptor, socket, cache);
+      });
+}
 
-    server(boost::asio::io_context& io_context, std::string address, std::uint64_t port, Cache* cache)
-    : io_context(io_context)
-    , acceptor  (io_context, boost::asio::ip::tcp::endpoint(ip::address_v4::make_address_v4(address), port))
-    , cache_ (cache)
-    {
-    }
-
-    void async_accept()
-    {
-        socket.emplace(io_context);
-
-        acceptor.async_accept(*socket, [&] (boost::system::error_code error)
-        {
-            std::make_shared<session>(std::move(*socket), cache_)->start();
-            async_accept();
-        });
-    }
-
-private:
-
-    boost::asio::io_context& io_context;
-    boost::asio::ip::tcp::acceptor acceptor;
-    std::optional<boost::asio::ip::tcp::socket> socket;
-    Cache* cache_;
-};
-
-int main(int argc, char** argv)
+int 
+main(int argc, char* argv[])
 {
     size_type maxmem = 128;
     std::string address("127.0.0.1");
-    size_type port = 10002;
+    port_type port = 10002;
     size_type threads = 1;
 
     auto request_success = set_params(maxmem, address, port, threads, argc, argv);
@@ -276,10 +368,27 @@ int main(int argc, char** argv)
     LRU_Evictor* evictor = new LRU_Evictor();
     Cache* cache = new Cache(maxmem, 0.75, evictor);
 
-    boost::asio::io_context io_context;
-    server srv(io_context, address, port, cache);
-    srv.async_accept();
-    io_context.run();
-    return 0;
     
+    try
+    {
+        std::cout << "cache address: " << cache << std::endl;
+        auto const ip_address = net::ip::make_address(address);
+        net::io_context ioc{1};
+        tcp::acceptor acceptor{ioc, {ip_address, port}};
+        tcp::socket socket{ioc};
+        http_server(acceptor, socket, cache);
+
+        ioc.run();
+    }
+    catch(std::exception const& e)
+    {
+        std::cerr << "Error: " << e.what() << std::endl;
+        return EXIT_FAILURE;
+
+        delete evictor;
+        delete cache;
+    }
+    
+    delete evictor;
+    delete cache;
 }
