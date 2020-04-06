@@ -26,3 +26,8 @@ Our project passed all tests.
 |reset | The reset function | Passed|
 |space_used | The space_used function | Passed|
 |LRU | The LRU evictor | Passed |
+
+### Problems we encountered
+There are two subtle problems that are worth talking about. 
+ - In the get function of the client, we are supposed to return a char* ptr. However, since client doesn't have the real val saving in its class, we need to create a char arrary on the heap using new and return its ptr. This may cause potential memory leak since the original get function doesn't require the user (and the tests) to delete the return char* to prevent memory leak. However, since our test program terminates, this is not a big issue.
+ - The new cache.hh that Eitan gave us doesn't require the del function to return a boolean variable indicating whether the deletion was successful, so our server didn't implement this feature. Hence we slightly modified our unit tests: not to check the result of the deletion directly but to check whether the space_used changes correctly. 
