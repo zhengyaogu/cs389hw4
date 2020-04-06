@@ -12,4 +12,17 @@ We modified our unit tests in hw3 to fit the new API. Since the server can only 
 Now, type "make xxx_test" to run the unit tests which use xxx evictor. There are three evictors in our project: fifo, lru and null. \
 Once the tests are over, you need to shut down the server and manually change the evictor that the server uses. Then run the server background, but you don't need to compile the test again. You can just type "make yyy_test", where yyy is the new evictor that you used.\
 Please note that since our server currently runs with a fixed address and a fixed port, it's essential to only have one server running in the background, otherwise you will get many strange errors.\
-Currently all known bugs are fixed and our projects passed all the tests on my machine.
+
+### Test Result on Our Code
+Our project passed all tests.
+
+|Test_case | Test Target | Result|
+|--- | --- | --- |
+|FIFO | The FIFO evictor | Passed|
+|set1 | The set function with no evictor | Passed|
+|set2 | The set functino with a FIFO evictor |  Passed|
+|get | The get function |  Passed|
+|del | The del function | Passed|
+|reset | The reset function | Passed|
+|space_used | The space_used function | Passed|
+|LRU | The LRU evictor | Passed |
