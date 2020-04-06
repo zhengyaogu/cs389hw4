@@ -1,10 +1,10 @@
 #include "cache.hh"
 #include "lru_evictor.hh"
 #include <unistd.h>
+#include <boost/asio.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/version.hpp>
-#include <boost/asio.hpp>
 #include <chrono>
 #include <cstdlib>
 #include <ctime>
@@ -202,7 +202,7 @@ private:
                     break;
                 }
                 key = key.substr(1);
-                
+//                std::cout << key << " " << key.size() << "\n";
                 Cache::size_type size = 0;
                 auto val = cache_->get(key, size);
                 if (val == nullptr) 
@@ -243,7 +243,9 @@ private:
                 break;
             }
             auto key = key_value.substr(0, delim_pos);
+//            std::cout << key << " " << key.size() << "\n";
             auto value = key_value.substr(delim_pos + 1);
+//           std::cout << value << " " << value.size() << "\n";
             Cache::val_type val_ptr = value.c_str();
 
             cache_->set(key, val_ptr, value.size() + 1);
@@ -282,7 +284,7 @@ private:
 
         case http::verb::post:
             {auto target = static_cast<std::string>(request_.target());
-            if (target.compare("/reset") != 1)
+            if (target.compare("/reset") != 0)
             {
                 response_.result(400);
                 beast::ostream(response_.body()) << "BAD REQUEST";
@@ -351,7 +353,7 @@ http_server(tcp::acceptor& acceptor, tcp::socket& socket, Cache* cache)
 int 
 main(int argc, char* argv[])
 {
-    size_type maxmem = 128;
+    size_type maxmem = 30;
     std::string address("127.0.0.1");
     port_type port = 10002;
     size_type threads = 1;

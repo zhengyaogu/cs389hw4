@@ -144,6 +144,10 @@ Cache::Cache(size_type maxmem,
     pImpl_ = std::unique_ptr<Impl>(new Impl(maxmem, max_load_factor, evictor, hasher));
 }
 
+Cache::Cache(std::string host, std::string port)
+{ }
+
+
 Cache::~Cache()
 {
     pImpl_->reset();
