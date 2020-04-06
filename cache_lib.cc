@@ -131,8 +131,11 @@ class Cache::Impl
     {
         while(!table->empty())
             free(table->cbegin());
-        current_mem = 0;
         table->clear();
+        current_mem = 0;
+        std::string evicted = "1";
+        while(evicted != "" && my_evictor != nullptr)
+            evicted = my_evictor->evict();
     }
 };
 
