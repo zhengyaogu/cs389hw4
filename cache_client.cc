@@ -117,7 +117,10 @@ class Cache::Impl
             auto value = ret.substr(x + 8, y - x - 8);
             val_size = y - x - 8 + 1;
             std::cout << value << " " << val_size << "\n";
-            return value.c_str();
+            char* val = new char[val_size];
+            for(unsigned int i = 0; i < val_size - 1; i ++)
+                val[i] = value[i];
+            return val;
         }
         val_size = 0;
         return nullptr;

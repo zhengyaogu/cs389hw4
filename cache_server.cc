@@ -1,5 +1,6 @@
 #include "cache.hh"
 #include "lru_evictor.hh"
+#include "fifo_evictor.hh"
 #include <unistd.h>
 #include <boost/asio.hpp>
 #include <boost/beast/core.hpp>
@@ -367,7 +368,9 @@ main(int argc, char* argv[])
     std::cout << "port: " << port << std::endl;
     std::cout << "threads: " << threads << std::endl;
 
-    LRU_Evictor* evictor = new LRU_Evictor();
+//    LRU_Evictor* evictor = new LRU_Evictor();
+    FIFO_Evictor* evictor = new FIFO_Evictor();
+//    Evictor* evictor = nullptr;
     Cache* cache = new Cache(maxmem, 0.75, evictor);
 
     
